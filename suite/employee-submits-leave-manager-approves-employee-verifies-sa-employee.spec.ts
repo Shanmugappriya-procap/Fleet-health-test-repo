@@ -97,8 +97,8 @@ test('Employee submits leave, Manager approves, Employee verifies saved status',
       await m.step('3/s33', 'employee', page => page.getByRole('button', { name: 'Cancel Leave' }).click());
       await m.step('3/s34', 'employee', page => page.getByRole('dialog').getByRole('button', { name: 'Cancel Leave' }).click());
       await m.step('3/s36', 'employee', page => page.getByRole('combobox').click());
-      await m.step('3/s37', 'employee', page => expect(page.getByRole('option', { name: /^PAID \(18 Nov 2027 to 18 Nov 2027\) — (Pending|Approved)$/ })).toHaveCount(0));
     }
+    await m.step('3/s37', 'employee', page => expect(page.getByRole('option', { name: /^PAID \(18 Nov 2027 to 18 Nov 2027\) — (Pending|Approved)$/ })).toHaveCount(0));
   }, { always: true });
   await m.end();
 });
