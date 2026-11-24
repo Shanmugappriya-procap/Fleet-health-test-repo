@@ -73,6 +73,10 @@ export async function guardedFetch(url, init = {}, maxHops = 10) {
   }
 }
 
+// newContext options for a guarded browser: service workers blocked — their fetches never reach context.route, so a
+// page could use one to reach a blocked address (pentest PRC-AI-003)
+export const guardOptions = () => (on() ? { serviceWorkers: 'block' } : {});
+
 // Browser: refuse every request to a blocked destination (navigation, redirect or subresource).
 export async function guardContext(context) {
   if (!on()) return;

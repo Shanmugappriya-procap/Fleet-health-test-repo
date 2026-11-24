@@ -1,6 +1,6 @@
 {
  "version": 1,
- "checker": "1.1.0",
+ "checker": "1.2.0",
  "presets": [
   "@eslint/js recommended",
   "typescript-eslint recommended",
@@ -13,9 +13,7 @@
   "playwright/no-raw-locators",
   "playwright/no-nth-methods",
   "meridian/no-action-in-check",
-  "meridian/no-dom-read",
-  "meridian/no-logic-in-step",
-  "meridian/no-short-timeout"
+  "meridian/no-dom-read"
  ],
  "rules": [
   {
@@ -411,7 +409,7 @@
   },
   {
    "id": "meridian/no-dom-read",
-   "name": "Disallow reading the page through its DOM in a step",
+   "name": "Disallow running code inside the page in a step",
    "severity": "warning",
    "weight": 3,
    "source": "meridian",
@@ -421,38 +419,8 @@
    "agent": true,
    "fixedBy": "agent",
    "gate": false,
-   "why": "Code run inside the page reads markup, classes and storage — things no user sees — so it breaks on a restyle and passes on a page that looks wrong.",
-   "fix": "Check what the page shows: expect(locator).toBeChecked() / toHaveText(…) / toHaveCount(n) on a getByRole / getByText locator. Keep evaluate only for what has no visible form (local storage, scroll position) and say why in the step's note."
-  },
-  {
-   "id": "meridian/no-logic-in-step",
-   "name": "Disallow loops and branches in a step's own code",
-   "severity": "warning",
-   "weight": 2,
-   "source": "meridian",
-   "docs": null,
-   "eslint": "warn",
-   "acceptCode": "conditional_check",
-   "agent": true,
-   "fixedBy": "agent",
-   "gate": false,
-   "why": "A loop or branch written inside one step runs a different number of actions and checks each time, none of them visible as steps.",
-   "fix": "Use the test case's own loop / if calls (over a data table, or on a visible condition) with one plain call per action and check inside."
-  },
-  {
-   "id": "meridian/no-short-timeout",
-   "name": "Disallow a timeout shorter than 3 seconds in a step",
-   "severity": "warning",
-   "weight": 2,
-   "source": "meridian",
-   "docs": null,
-   "eslint": "warn",
-   "acceptCode": "short_timeout",
-   "agent": true,
-   "fixedBy": "agent",
-   "gate": false,
-   "why": "A timeout under 3 seconds fails on a slow day for no fault of the product.",
-   "fix": "Leave the timeout out: the default (8 s) applies."
+   "why": "Code run inside the page reads or sets what no user sees — markup, classes, local / session storage — so it breaks on a restyle and passes on a page that looks wrong.",
+   "fix": "Check what the page shows: expect(locator).toBeChecked() / toHaveText(…) / toHaveCount(n) on a getByRole / getByText locator. To carry a value to a later step, capture it (browser_capture, then {{name}}) or put it in the test's fixed_data — not in local / session storage. Keep evaluate only for what has no visible form and say why in the step's note."
   },
   {
    "id": "no-async-promise-executor",

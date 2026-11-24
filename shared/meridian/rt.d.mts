@@ -105,6 +105,8 @@ export declare class Meridian {
   exactName(name: string): string | RegExp;
   /** a step's text with its {{tokens}} and $VARIABLES filled in */
   t(text: string): string;
+  lit(token: string): any;
+  read(loc: Locator): Promise<string>;
   inPage<T>(fn: T): T;
   useData(sets: Record<string, unknown>): void;
 }

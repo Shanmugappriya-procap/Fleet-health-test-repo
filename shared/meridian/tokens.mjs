@@ -99,6 +99,25 @@ export function uidDigits(uid) {
   for (const c of String(uid || '')) h = (h * 131n + BigInt(c.charCodeAt(0))) % 1000000000n;
   return String(h).padStart(9, '0');
 }
+// browser_capture's read of an element, live (src/capture.mjs, upstream's browser_evaluate) and compiled (rt.mjs m.read):
+// a form field's value as it is — its innerText is "" (QA task 327ef17c: a textarea captured "", and the test then
+// restored a real QA config to empty) — any other element's text, trimmed. By tag name: an iframe's element is no
+// instance of the top page's HTMLInputElement.
+export const READ_VALUE = "(element) => (/^(INPUT|TEXTAREA)$/.test(element.tagName) ? String(element.value ?? '') "
+  + ": (element.innerText ?? element.textContent ?? '').trim())";
+// A token outside quotes in code ("const T = {{tasks}};", "toHaveCount({{n+1}})"): the live run writes its text into the
+// code as it is (src/tokens.mjs fillCode) — a captured list as JSON is a list, a number a number — and the compiled
+// spec reads that same text as the same value (rt.mjs m.lit). Text that is no JS value ("abc", a hex id "5f3a…", a
+// date) is refused alike in both, with how to write it: before, the spec made it Number(…) — a captured list became
+// NaN ("tasks.filter is not a function", QA task 3d540d3a) while the live run passed.
+const JS_NUMBER = /^[+-]?(?:0[xX][\da-fA-F]+|0[oO][0-7]+|0[bB][01]+|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)$/;
+export function codeValue(text, token) {
+  const s = String(text).trim();
+  try { return JSON.parse(s); } catch { /* not JSON */ }
+  if (JS_NUMBER.test(s)) return Number(s);
+  throw new Error(`${token} outside quotes is written into the code as it is, and ${JSON.stringify(String(text).slice(0, 80))} `
+    + `is no JavaScript value — quote it ('${token}') to use it as text`);
+}
 export function fillTokens(text, v, env = process.env) {
   return String(text).replace(TOKEN_RE, (m, envName, name, col, terms, fmt, pattern) => {
     if (pattern && name !== 'today' && name !== 'day') throw new Error(`${m}: a date pattern after ":" is for {{today…}} / {{day…}} only`);

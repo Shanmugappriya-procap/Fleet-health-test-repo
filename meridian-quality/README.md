@@ -42,10 +42,8 @@ per step, at the first place:
 
 | Rule | A step that… |
 | --- | --- |
-| `meridian/no-action-in-check` | checks with `expect(…)` and also clicks, ticks or types |
-| `meridian/no-dom-read` | runs code inside the page (`evaluate`, `evaluateAll`, `waitForFunction`) instead of reading what it shows |
-| `meridian/no-logic-in-step` | loops or branches in its own code (a branch around a check is `playwright/no-conditional-expect`) |
-| `meridian/no-short-timeout` | sets a timeout under 3 seconds |
+| `meridian/no-action-in-check` | checks with `expect(…)` and also acts on the page — clicks, ticks, types or navigates through `page` or a locator taken from it, in the step's own code (not inside a route handler, `evaluate` or an `expect.poll` / `toPass` retry) |
+| `meridian/no-dom-read` | runs code inside the page (`evaluate`, `evaluateAll`, `waitForFunction`) — markup, local / session storage — instead of checking what it shows |
 
 A step kept on purpose says so in the code: the line above it reads `// meridian-note: fixed_sleep: <why>`. A finding of
 the rule that code accepts is listed as **accepted** and costs nothing.

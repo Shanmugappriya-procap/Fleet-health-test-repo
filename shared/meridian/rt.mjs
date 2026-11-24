@@ -9,8 +9,8 @@ import { test, expect as baseExpect } from '@playwright/test';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { runApiCall, sanitizeHeaders } from './api.mjs';
 import { runDbAction } from './db.mjs';
-import { guardContext } from './netguard.mjs';
-import { asNumber, fillTokens, fmtNum, newUid, parseNum } from './tokens.mjs';
+import { guardContext, guardOptions } from './netguard.mjs';
+import { READ_VALUE, asNumber, codeValue, fillTokens, fmtNum, newUid, parseNum } from './tokens.mjs';
 
 
 export const ACTION_TIMEOUT_MS = 8000;
@@ -312,18 +312,26 @@ export const routeFailure = (e) => new Error(`the test's own route handler (page
   + 'A mock answers its request (route.fulfill / abort) without waiting on the page — record what you need to know '
   + '(a flag set with page.evaluate) and check it in a later step.');
 export const isRouteFailure = (e) => /^the test's own route handler/.test(String(e?.message ?? ''));
+// unrouteAll({ behavior: 'ignoreErrors' }) is the test saying "a handler still in flight may fail now: don't care" —
+// upstream honours it only for an error that leaves the handler, and ours never does (caught above), so it is kept
+// here: the handlers registered before that call stop reporting. QA run 753eb48e (2026-11-19): MF-108's /me mock was
+// mid route.fetch() when the next step unrouted with ignoreErrors and reloaded — "Route is already handled!" failed
+// that step 1 run in 3.
 export function guardRouteHandlers(target, report) {
   if (!target || target.__routeGuard || typeof target.route !== 'function') return;
   target.__routeGuard = true;
-  const route = target.route, unroute = target.unroute;
+  const route = target.route, unroute = target.unroute, unrouteAll = target.unrouteAll;
   const wrapped = new WeakMap();  // the test's handler -> ours, so unroute(url, handler) still finds it
+  let registered = new Set();     // this target's handler states since the last unrouteAll
   target.route = function (url, handler, options) {
     if (typeof handler !== 'function') return route.call(this, url, handler, options);
+    const state = { ignoreErrors: false };
+    registered.add(state);
     const g = async function (r, req) {
       try {
         return await handler.call(this, r, req);
       } catch (e) {
-        report(e);
+        if (!state.ignoreErrors) report(e);
         await r.abort('failed').catch(() => {});  // answered already, or the page is gone: fine
         return undefined;
       }
@@ -333,6 +341,12 @@ export function guardRouteHandlers(target, report) {
   };
   if (typeof unroute === 'function')
     target.unroute = function (url, handler) { return unroute.call(this, url, (handler && wrapped.get(handler)) || handler); };
+  if (typeof unrouteAll === 'function')
+    target.unrouteAll = function (options) {
+      if (options?.behavior === 'ignoreErrors') for (const state of registered) state.ignoreErrors = true;
+      registered = new Set();
+      return unrouteAll.call(this, options);
+    };
 }
 function attachDialogs(page) {
   if (dialogs.has(page)) return dialogs.get(page);
@@ -698,7 +712,7 @@ export class Meridian {
         ({ page, context } = await this.sessions.open(id, { record, setup }));
       } else {
         context = await this.browser.newContext({ recordVideo: record ? { dir: `test-videos/${this.slug}/${id}` } : undefined, ...contextSetup(setup),
-          ...(state ? { storageState: state } : {}) });
+          ...(state ? { storageState: state } : {}), ...guardOptions() });
         await guardContext(context);
         // our own trace per browser (the run page's) — unless the test runner already traces it (a project's config
         // with trace on): then that one is kept, and ours is neither started nor stopped
@@ -1132,12 +1146,22 @@ export class Meridian {
   }
 
   t(text) { return fillTokens(text, this.v); }
+  // browser_capture: the element's value or text, read as the live capture reads it (tokens.mjs READ_VALUE)
+  async read(loc) { return loc.evaluate(new Function(`return (${READ_VALUE})`)()); }
+  // a token outside quotes in code ({{tasks}}, {{n+1}}): the value its text is, as the live run pastes the text (tokens.mjs codeValue)
+  lit(token) { return codeValue(this.t(token), token); }
 
   // A function the browser runs (page.evaluate(m.inPage(fn))) with its m.t('…') calls replaced by their values, written
   // into its source: the page has no `m`, and the live run fills a token's value into the code the same way.
   inPage(fn) {
     if (typeof fn !== 'function') return fn;
-    const src = String(fn).replace(/\bm\.t\(\s*('(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*")\s*\)/g,
+    // m.lit('{{x}}'): the text itself, as the live run writes it into the code (checked as m.lit checks it)
+    const src = String(fn).replace(/\bm\.lit\(\s*('(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*")\s*\)/g, (_, literal) => {
+      const token = new Function(`return ${literal}`)();
+      const text = this.t(token);
+      codeValue(text, token);
+      return `(${text})`;
+    }).replace(/\bm\.t\(\s*('(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*")\s*\)/g,
       (_, literal) => JSON.stringify(this.t(new Function(`return ${literal}`)())));
     return new Function(`return (${src})`)();
   }

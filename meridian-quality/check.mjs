@@ -183,11 +183,13 @@ function exempt(rule, m, lines) {
 // What the standard presets cannot see in a compiled suite: a step is ONE call of the test case, written as
 // `m.step(<ref>, <browser>, page => …)`, and these rules read that callback — the code its author wrote. They are what
 // makes a step hard to read back as "what a user does" (2026-11-16: a check that also ticked boxes, looped and read the
-// DOM scored 100). Each is a normal ESLint rule; a step that keeps one on purpose says so in its note.
+// DOM scored 100). Each is a normal ESLint rule; a step that keeps one on purpose says so in its note. Two more were
+// removed in 1.2.0 (2026-11-19): no-logic-in-step (a branch is playwright/no-conditional-expect's, and its own fix — the
+// test case's if call — was charged there instead; most of its findings were kept by a note) and no-short-timeout
+// (never fired on QA).
 const ACTIONS = new Set(['click', 'dblclick', 'check', 'uncheck', 'setChecked', 'fill', 'type', 'pressSequentially', 'press',
   'selectOption', 'setInputFiles', 'hover', 'tap', 'dragTo', 'clear', 'goto', 'reload', 'goBack', 'goForward']);
 const DOM_READS = new Set(['evaluate', 'evaluateAll', 'evaluateHandle', 'waitForFunction', '$eval', '$$eval']);
-const SHORT_TIMEOUT_MS = 3000;  // the authoring check's line (shared/testcase_quality_mpw.py short_timeout)
 const isFn = (n) => n && (n.type === 'ArrowFunctionExpression' || n.type === 'FunctionExpression');
 const isStepCall = (n) => n?.type === 'CallExpression' && n.callee.type === 'MemberExpression' && !n.callee.computed
   && n.callee.property.name === 'step' && n.callee.object.type === 'Identifier' && n.callee.object.name === 'm';
@@ -209,6 +211,30 @@ function isExpect(call) {
   return (c.type === 'Identifier' && c.name === 'expect')
     || (c.type === 'MemberExpression' && c.object.type === 'Identifier' && c.object.name === 'expect');
 }
+// Does `expr` come from the step's page — `page`, `page.getByRole(…).first()`, `page.keyboard`, or a variable the step
+// set from one of those (`const row = page.getByRole('row')`)? Followed through a few variables, never across functions.
+function fromPage(context, expr, fn, depth = 0) {
+  const pageName = fn.params[0]?.type === 'Identifier' ? fn.params[0].name : 'page';
+  let n = expr;
+  for (;;) {
+    if (!n) return false;
+    if (n.type === 'MemberExpression') n = n.object;
+    else if (n.type === 'CallExpression') n = n.callee;
+    else if (n.type === 'AwaitExpression' || n.type === 'ChainExpression' || n.type === 'TSNonNullExpression'
+      || n.type === 'TSAsExpression') n = n.expression;
+    else break;
+  }
+  if (n.type !== 'Identifier') return false;
+  if (n.name === pageName) return true;
+  if (depth >= 4) return false;
+  for (let scope = context.sourceCode.getScope(n); scope; scope = scope.upper) {
+    const v = scope.set.get(n.name);
+    if (!v) continue;
+    const def = v.defs[0];
+    return def?.type === 'Variable' && !!def.node.init && fromPage(context, def.node.init, fn, depth + 1);
+  }
+  return false;
+}
 const rule = (description, messages, create) => ({ meta: { type: 'suggestion', docs: { description }, schema: [], messages }, create });
 
 // One finding per step and rule, at its first place: a step that loops is one thing to fix however long its code is
@@ -217,6 +243,11 @@ const oncePerStep = () => { const seen = new Set(); return (fn) => !seen.has(fn)
 const more = (n) => (n > 1 ? ` (${n} places in this step)` : '');
 
 export const meridian = { meta: { name: 'meridian' }, rules: {
+  // An action counts when it acts on the page: the call goes through the step's `page` (page.goto, page.getBy…().click,
+  // page.keyboard.press) or a variable holding a locator taken from it. Only the step's own code counts, for both sides:
+  // `new Array(n).fill(…)`, `seen.clear()` and `localStorage.clear()` inside page.evaluate are not the page acting; an
+  // expect inside a page.route handler checks a request, not the page; a reload inside expect.poll / toPass is the check
+  // retrying (2026-11-19: each of these was charged as "checks and also acts").
   'no-action-in-check': rule('Disallow actions in a step that also checks',
     { action: 'This step checks with expect(…) and also acts on the page: .{{name}}(){{more}}. A step is one thing a user does or one thing they see.' },
     (context) => {
@@ -224,10 +255,10 @@ export const meridian = { meta: { name: 'meridian' }, rules: {
       return {
         CallExpression(node) {
           const fn = stepFn(node);
-          if (!fn) return;
+          if (!fn || ownFn(node) !== fn) return;
           const s = steps.get(fn) || steps.set(fn, { expects: 0, actions: [] }).get(fn);
           if (isExpect(node)) s.expects++;
-          else if (ACTIONS.has(method(node))) s.actions.push(node);
+          else if (ACTIONS.has(method(node)) && fromPage(context, node.callee.object, fn)) s.actions.push(node);
         },
         'Program:exit'() {
           for (const s of steps.values())
@@ -236,42 +267,16 @@ export const meridian = { meta: { name: 'meridian' }, rules: {
         },
       };
     }),
-  'no-dom-read': rule('Disallow reading the page through its DOM in a step',
-    { dom: '.{{name}}() runs code inside the page and reads its DOM, which no user sees. Check what the page shows with a locator and expect(…).' },
+  // it is code run inside the page, whatever it touches there: markup, local / session storage, performance entries —
+  // the message said "reads its DOM", which an agent reading storage rightly disputed in its note (2026-11-19)
+  'no-dom-read': rule('Disallow running code inside the page in a step',
+    { dom: '.{{name}}() runs code inside the page instead of checking what it shows: no user sees what it reads or sets there. Check the page with a locator and expect(…).' },
     (context) => {
       const first = oncePerStep();
       return {
         CallExpression(node) {
           const fn = DOM_READS.has(method(node)) && stepFn(node);
           if (fn && first(fn)) context.report({ node: node.callee.property, messageId: 'dom', data: { name: method(node) } });
-        },
-      };
-    }),
-  'no-logic-in-step': rule('Disallow loops and branches in a step\'s own code',
-    { logic: '{{kind}} inside a step\'s code: the step does a different thing from run to run, and nobody can read it back as a step.' },
-    (context) => {
-      const first = oncePerStep();
-      const report = (kind) => (node) => {
-        const fn = stepFn(node);
-        // a branch that holds a check is playwright/no-conditional-expect's finding: one fault, one finding
-        if (fn && /^(An if|A switch)/.test(kind) && /\bexpect\s*[.(]/.test(context.sourceCode.getText(node))) return;
-        if (fn && ownFn(node) === fn && first(fn))
-          context.report({ node, loc: { start: node.loc.start, end: { line: node.loc.start.line, column: node.loc.start.column + kind.split(' ')[1].length } }, messageId: 'logic', data: { kind } });
-      };
-      return { ForStatement: report('A for loop'), ForOfStatement: report('A for loop'), ForInStatement: report('A for loop'),
-        WhileStatement: report('A while loop'), DoWhileStatement: report('A do loop'), IfStatement: report('An if branch'),
-        SwitchStatement: report('A switch branch') };
-    }),
-  'no-short-timeout': rule('Disallow a timeout shorter than 3 seconds in a step',
-    { short: 'A {{ms}} ms timeout: a slow page fails this step for no fault of the product.' },
-    (context) => {
-      const first = oncePerStep();
-      return {
-        Property(node) {
-          if (node.computed || (node.key.name ?? node.key.value) !== 'timeout') return;
-          const v = node.value;
-          const fn = v.type === 'Literal' && typeof v.value === 'number' && v.value > 0 && v.value < SHORT_TIMEOUT_MS && stepFn(node);
-          if (fn && first(fn)) context.report({ node, messageId: 'short', data: { ms: String(v.value) } });
         },
       };
     }),
