@@ -20,7 +20,9 @@ The checker reads the code. It never runs it.
 1. **Runs.** TypeScript checks every spec and the files beside it (`flows/`, `pages/`, `auth/`, `fixtures/`). Playwright
    strips types without checking them, so a name that doesn't exist, a missing import or a syntax error only shows up
    when that step runs. Any error of that kind is `BUILD-WONT-RUN` and means the code **won't run**. Other type errors
-   are findings (`BUILD-TYPE-ERROR`).
+   are findings (`BUILD-TYPE-ERROR`). The workspace's shared flows (`flows/`) are built with the specs so their imports
+   resolve, but they are not scored: no lint finding or type error in them is reported or counts in the score. Code in
+   a shared flow that won't run is still `BUILD-WONT-RUN`, because a suite that imports it can't run either.
 2. **Tests found.** Every spec declares a test (`BUILD-NO-TESTS`). A suite with no test at all has no score.
 3. **Lint.** ESLint with `typescript-eslint`, `eslint-plugin-playwright` and Meridian's own rules (`meridian/…`, in
    `check.mjs`). Each hit is reported under its Fleet Health rule. `rules.json` lists every rule with its severity, weight, why it matters

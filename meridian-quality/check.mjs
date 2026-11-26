@@ -2,6 +2,9 @@
 // (Fleet Health's score), in the downloaded / synced project as `npm run quality`, and in that project's GitHub Action.
 // It reads files, never runs them:
 //
+//   0. shared  — a workspace's shared flows (flows/) are built with the specs, so an import of one resolves, but are
+//                not scored: no lint finding or type error is reported in them and none counts in the score (since
+//                2026-11-25). Only code in one that won't run (BUILD-WONT-RUN) is reported: the suite can't run either.
 //   1. builds  — TypeScript over the specs and the files beside them (flows/, pages/, auth/, fixtures/). An error that
 //                makes the code fail when it runs (an undefined name, a missing module or export, a syntax error) is
 //                BUILD-WONT-RUN, a gate; any other type error is BUILD-TYPE-ERROR, a finding.
@@ -41,6 +44,9 @@ export const RULES_HASH = createHash('sha256').update(RULES_TEXT).digest('hex').
 const STEP_WONT_RUN_FIX = 'This step\'s own code uses a name that does not exist (a variable from another step, a helper never defined) or does not parse. Fix the code of that call in the test case.';
 // the directories a compiled project keeps its code in, beside the config
 const CODE_DIRS = ['suite', 'flows', 'pages', 'auth', 'fixtures'];
+// a workspace's shared flows: compiled into every suite that uses one, read so the specs' imports resolve, never scored
+const SHARED_DIRS = ['flows'];
+export const isShared = (file) => SHARED_DIRS.some((d) => file === d || file.startsWith(`${d}/`));
 const SEVERITIES = ['critical', 'major', 'warning', 'info'];
 // Two rules that report ONE fault on the same line — `await expect(response.status).toBe(200)` is both "awaiting a
 // value that is not a Thenable" and "an unnecessary await", and one edit clears both. Where the first is reported, the
@@ -303,6 +309,7 @@ export async function check(root, settings = {}) {
   root = path.resolve(root);
   ensureModules(root);
   const files = listFiles(root);
+  const checked = files.filter((f) => !isShared(rel(root, f)));  // what is scored: everything but the shared flows
   const specs = files.filter((f) => /^suite\/.*\.spec\.ts$/.test(rel(root, f)));
   const typesDir = path.dirname(path.dirname(require.resolve('@types/node/package.json')));
   const program = ts.createProgram(files, { ...COMPILER_OPTIONS, typeRoots: [typesDir] });
@@ -314,6 +321,7 @@ export async function check(root, settings = {}) {
   for (const d of ts.getPreEmitDiagnostics(program)) {
     if (d.category !== ts.DiagnosticCategory.Error) continue;
     const file = d.file ? rel(root, d.file.fileName) : '';
+    if (isShared(file) && !isFatal(d.code)) continue;  // a shared flow is not scored; code that won't run still breaks the suite
     const pos = d.file && d.start != null ? d.file.getLineAndCharacterOfPosition(d.start) : { line: 0, character: 0 };
     const text = ts.flattenDiagnosticMessageText(d.messageText, ' ');
     const row = { ruleId: isFatal(d.code) ? 'BUILD-WONT-RUN' : 'BUILD-TYPE-ERROR', file, line: pos.line + 1,
@@ -348,7 +356,7 @@ export async function check(root, settings = {}) {
       rules: { 'playwright/expect-expect': 'off' },
     }],
   });
-  const results = await eslint.lintFiles(files.map((f) => rel(root, f)));
+  const results = await eslint.lintFiles(checked.map((f) => rel(root, f)));
   for (const r of results) {
     const file = rel(root, r.filePath);
     for (const m of r.messages) {
@@ -391,7 +399,7 @@ export async function check(root, settings = {}) {
 
   return {
     toolchain: toolchain(),
-    files: files.map((f) => rel(root, f)),
+    files: checked.map((f) => rel(root, f)),
     specs: specs.length,
     tests,
     testsByFile,
